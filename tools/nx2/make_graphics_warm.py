@@ -6,7 +6,8 @@ the dump manifest (extract_static_shaders.py output) this lowers the native code
 shader-sweep (--capture-extent), rebuilds the code layout the emulator stores in its pipeline
 cache, and writes one single-stage entry per program. Mesh and task programs are skipped.
 
-File: 'yuzucach' + u32 version (54), then per entry (graphics layout since v52):
+File: 'yuzucach' + u32 version (must match the emulator's VulkanPipelineCacheVersion, 54 today),
+then per entry (v52/v53 graphics layout):
     u32 env count = 1
     env record (GenericEnvironment::Serialize layout):
         u64 code_size, u64 texture types = 0, u64 pixel formats = 0, u64 cbuf values = N,
