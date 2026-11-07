@@ -352,8 +352,10 @@ bool DmaPusher::Step() {
                         }
                     }
                 });
-            } else if (!SkipWriterWait(u64{header.size} * sizeof(u32)) &&
-                       split.WaitForWriters()) {
+            } else if (!SkipWriterWait(u64{header.size} * sizeof(u32))) {
+                // Recheck even when the wait returns at once: a writer may have finished (and
+                // marked the pages) since the check above.
+                split.WaitForWriters();
                 gpu_written =
                     IsGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             }
