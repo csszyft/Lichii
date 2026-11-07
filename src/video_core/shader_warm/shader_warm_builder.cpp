@@ -391,7 +391,9 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
     } else {
         // The title's own pipeline cache: this fork writes vulkan-frizti.fork-v<n>.bin
         // (LoadDiskResources) and only copies the shared vulkan.fork-v<n>.bin once, so prefer
-        // the fork's file and fall back to the shared one.
+        // the fork's file and fall back to the shared one. Right after a version bump neither
+        // exists yet: then take the newest older cache with the same record layout (the play
+        // history the guesses come from), with the same fork-then-shared preference.
         const auto own = VideoCommon::VersionedPipelineCachePath(
             TitleDir(title_id), "vulkan-frizti", VideoCommon::VulkanPipelineCacheVersion);
         const auto shared = VideoCommon::VersionedPipelineCachePath(
@@ -400,6 +402,22 @@ Result BuildWarmFilesWith(Core::System& system, const fs::path& game_path, u64 t
             caches.push_back(own);
         } else if (fs::exists(shared, ec)) {
             caches.push_back(shared);
+        } else {
+            for (const u32 version : CompatibleRuntimeCacheVersions) {
+                const auto older_own =
+                    VideoCommon::VersionedPipelineCachePath(TitleDir(title_id), "vulkan-frizti",
+                                                            version);
+                const auto older_shared = VideoCommon::VersionedPipelineCachePath(
+                    TitleDir(title_id), "vulkan", version);
+                if (fs::exists(older_own, ec)) {
+                    caches.push_back(older_own);
+                    break;
+                }
+                if (fs::exists(older_shared, ec)) {
+                    caches.push_back(older_shared);
+                    break;
+                }
+            }
         }
     }
     const RuntimeStats stats = ReadRuntimeStats(caches);

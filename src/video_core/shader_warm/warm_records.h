@@ -22,6 +22,22 @@ namespace VideoCommon::ShaderWarm {
 /// loader (PipelineCache::StartComputeWarm) accepts only files stamped with the current
 /// VulkanPipelineCacheVersion, so a bump rebuilds the warm-up files too.
 constexpr u32 WarmCacheVersion = VideoCommon::VulkanPipelineCacheVersion;
+/// Older runtime cache versions with the same record layout, newest first: their records still
+/// give the draw state guesses when the current version has no cache yet (just after a bump).
+/// Only extend this list when the record layout is unchanged (52 to 54 are identical).
+constexpr std::array<u32, 2> CompatibleRuntimeCacheVersions{53, 52};
+/// Whether a runtime cache file of `version` can be read for the draw state guesses.
+constexpr bool IsReadableRuntimeCacheVersion(u32 version) {
+    if (version == WarmCacheVersion) {
+        return true;
+    }
+    for (const u32 compatible : CompatibleRuntimeCacheVersions) {
+        if (version == compatible) {
+            return true;
+        }
+    }
+    return false;
+}
 constexpr size_t GraphicsKeySize = 1056;
 constexpr size_t AttributeTypesOffset = 112;
 /// Per slot most common nonzero vertex attribute type, a default measured on one test title (see
