@@ -528,21 +528,20 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         const auto read_handle{[&](const auto& desc, u32 index) {
             if (desc.handle_program != ~0U) {
                 // Read by the shader from a storage buffer: computed for this draw.
-                const auto evaluate{[&](u64 storage_alignment) {
+                // The program's storage offsets are relative to the buffer address aligned down
+                // to the host storage alignment (StorageOffset), which is also where the buffer
+                // cache binds the buffer.
+                const u64 storage_alignment{device.GetStorageBufferAlignment()};
+                const auto evaluate{[&](u64 alignment) {
                     return VideoCommon::EvaluateTextureHandle(
                         info, desc.handle_program, *gpu_memory,
                         [&](u32 cbuf) -> GPUVAddr {
                             return cbuf < cbufs.size() && cbufs[cbuf].enabled ? cbufs[cbuf].address
                                                                               : GPUVAddr{};
                         },
-                        storage_alignment);
+                        alignment);
                 }};
-                // The program's storage offsets are relative to the buffer address aligned down
-                // to the host storage alignment (StorageOffset). EDEN_NX2_HANDLE_ALIGN=1 reads
-                // the words there instead of at the unaligned address.
-                static const bool align_storage{std::getenv("EDEN_NX2_HANDLE_ALIGN") != nullptr};
-                const u64 storage_alignment{device.GetStorageBufferAlignment()};
-                const u32 raw{evaluate(align_storage ? storage_alignment : 1)};
+                const u32 raw{evaluate(storage_alignment)};
                 if (raw == 0) {
                     ++zero_texture_handles;
                     static std::set<std::pair<u64, u32>> logged;

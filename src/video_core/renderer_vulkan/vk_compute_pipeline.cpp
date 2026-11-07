@@ -334,7 +334,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     }};
     build_task = std::move(func);
     if (thread_worker) {
-        thread_worker->QueueWork([this] { RunBuild(); });
+        build_task_done = false;
+        thread_worker->QueueWork([this] {
+            RunBuild();
+            // The last access to this pipeline from the worker.
+            build_task_done.store(true, std::memory_order::release);
+        });
     } else {
         RunBuild();
     }
@@ -379,7 +384,6 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     const auto read_handle{[&](const auto& desc, u32 index) {
         if (desc.handle_program != ~0U) {
             // Read by the shader from a storage buffer: computed for this dispatch.
-            static const bool align_storage{std::getenv("EDEN_NX2_HANDLE_ALIGN") != nullptr};
             return TexturePair(VideoCommon::EvaluateTextureHandle(
                                    info, desc.handle_program, gpu_memory,
                                    [&](u32 cbuf) -> GPUVAddr {
@@ -389,7 +393,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                                   ? cbufs[cbuf].Address()
                                                   : GPUVAddr{};
                                    },
-                                   align_storage ? device.GetStorageBufferAlignment() : 1),
+                                   device.GetStorageBufferAlignment()),
                                via_header_index);
         }
         ASSERT(((qmd.const_buffer_enable_mask >> desc.cbuf_index) & 1) != 0);

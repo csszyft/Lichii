@@ -24,7 +24,11 @@ It does not prove that a draw's output is temporary.
 lighting, storage data, compute inputs, copied render targets, or readback sources. There is no
 reliable native classification for safe-to-skip draws. By default (#224) native draws follow the
 heuristic too: one is skipped while its pipeline builds when depth is enabled or both draw counts
-exceed six, so a lighting or post pass with no depth and few vertices still waits.
+exceed six, so a lighting or post pass with no depth and few vertices still waits. This build
+defaults `native_async_draws` to Bounded (#465): each frame waits up to `native_pipeline_wait_ms`
+for such pipelines and skips only the draws the budget did not build. Wait and Skip are
+selectable, and `EDEN_NX2_ASYNC_DISCARD` still overrides the setting (0 waits, any other value
+skips).
 
 ## What runs where
 

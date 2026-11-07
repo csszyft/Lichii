@@ -201,6 +201,9 @@ struct Values {
     Setting<bool, false> dump_audio_commands{
                                              linkage, false, "dump_audio_commands", Category::Audio, Specialization::Default, false};
 
+    Setting<u16, true> microphone_volume{linkage, 100, 0, 200, "microphone_volume",
+                                        Category::Controls};
+
     // Core
     SwitchableSetting<bool> use_multi_core{linkage, true, "use_multi_core", Category::Core};
     // 8 GB: Ocarina of Time's own memory size (the Frizti builds are tuned for it).
@@ -358,6 +361,18 @@ struct Values {
                                                   Specialization::RuntimeList,
                                                   true,
                                                   true};
+
+    // Lichii: caps how often the game's own compositor presents, so the game itself is paced to
+    // this rate instead of only the display. 0 keeps the game's vblank and swap interval.
+    SwitchableSetting<u32, true> fps_limit{linkage,
+                                           0,
+                                           0,
+                                           480,
+                                           "fps_limit",
+                                           Category::Renderer,
+                                           Specialization::Countable,
+                                           true,
+                                           true};
 
     SwitchableSetting<ScalingFilter> scaling_filter{linkage,
                                                     ScalingFilter::ScaleForce,
@@ -605,6 +620,25 @@ struct Values {
     SwitchableSetting<bool> use_vulkan_driver_pipeline_cache{
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
+
+    // This build defaults to Bounded (#465): wait up to native_pipeline_wait_ms, then skip.
+    SwitchableSetting<NativeAsyncDraws> native_async_draws{linkage,
+                                                           NativeAsyncDraws::Bounded,
+                                                           "native_async_draws",
+                                                           Category::RendererAdvanced,
+                                                           Specialization::Default,
+                                                           true,
+                                                           true};
+
+    SwitchableSetting<u32, true> native_pipeline_wait_ms{linkage,
+                                                         8,
+                                                         1,
+                                                         100,
+                                                         "native_pipeline_wait_ms",
+                                                         Category::RendererAdvanced,
+                                                         Specialization::Countable,
+                                                         true,
+                                                         true};
 
     SwitchableSetting<bool> enable_compute_pipelines{linkage, false, "enable_compute_pipelines",
                                                      Category::RendererAdvanced};
