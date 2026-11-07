@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - nx2-experimental
+      - v3-fixes
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -49,7 +50,7 @@ jobs:
       contents: write
     steps:
       - name: Prepare release tag
-        if: github.event_name == 'push' || inputs.publish_release
+        if: inputs.publish_release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,30 +81,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          # The Linux -pgo builds are the same programs compiled by clang against the repo's
-          # eglantine.profdata. Eden's profile (Eden-CI/PGO) comes from Switch 1 games: with it Mario
-          # Kart World ran at about half the speed of the normal build, with eglantine.profdata at
-          # about the same speed. Both Windows builds are clang-cl with ThinLTO; windows-x86_64-pgo
-          # adds lichii-windows.profdata, an MSVC-ABI profile trained on Ocarina of Time (see
-          # docs/CI.md). MSVC still builds for development.
-          - platform: linux-x86_64-pgo
-            runner: ubuntu-24.04
-            pgo: true
+          # Both Windows builds are clang-cl with ThinLTO; windows-x86_64-pgo adds
+          # lichii-windows.profdata, an MSVC-ABI profile trained on Ocarina of Time (see docs/CI.md).
           - platform: windows-x86_64
             runner: windows-2022
           - platform: windows-x86_64-pgo
             runner: windows-2022
             pgo: true
             profile: lichii-windows.profdata
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
-          - platform: macos-arm64
-            runner: macos-15
 
     steps:
       - name: Check out source
@@ -316,6 +301,8 @@ jobs:
             -DYUZU_USE_BUNDLED_QT=OFF \
             -DYUZU_USE_BUNDLED_SDL3=ON \
             -DENABLE_UPDATE_CHECKER=ON \
+            -DENABLE_RENHDRUM=ON \
+            -DRENHDRUM_DOWNLOAD=ON \
             -DLICHII_BUILD_TAG=build-${{ github.run_number }} \
             -DLICHII_BUILD_PLATFORM=${{ matrix.platform }} \
             -DUSE_DISCORD_PRESENCE=OFF \
@@ -364,7 +351,7 @@ jobs:
           if command -v ccache > /dev/null; then ccache --zero-stats; else sccache --zero-stats; fi
           targets="yuzu yuzu-cmd"
           if [[ "${{ matrix.platform }}" == windows* ]]; then targets="$targets lichii-updater"; fi
-          cmake --build build/release --target $targets --parallel
+          cmake --build build/release --target $targets --parallel -- -k 0
           if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
 
       - name: Stop sccache on Windows
@@ -551,7 +538,7 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: github.event_name == 'push' || inputs.publish_release
+    if: inputs.publish_release
     runs-on: ubuntu-24.04
     permissions:
       contents: write
