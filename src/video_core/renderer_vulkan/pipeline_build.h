@@ -37,6 +37,8 @@ public:
 
     explicit EmissionBudget(size_t capacity_) : capacity{capacity_} {}
 
+    /// A reservation while `enabled` (the async_pipelines Nx2Perf switch for deferred emission),
+    /// the program is native and fewer than the capacity are held, else null.
     std::unique_ptr<Reservation> TryAcquire(bool enabled, bool native) {
         size_t count = pending->load(std::memory_order_relaxed);
         if (!DefersShaderEmission(enabled, native, count, capacity)) {
@@ -50,6 +52,12 @@ public:
             }
         }
         return nullptr;
+    }
+
+    /// TryAcquire for a budget no switch gates (the cached pipeline prebuild,
+    /// vk_pipeline_cache_prebuild.h).
+    std::unique_ptr<Reservation> TryAcquire(bool native) {
+        return TryAcquire(true, native);
     }
 
     size_t Pending() const {

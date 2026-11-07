@@ -704,6 +704,10 @@ struct Values {
     SwitchableSetting<bool> gpu_unswizzle_enabled{linkage, false, "gpu_unswizzle_enabled",
                                                   Category::RendererHacks};
 
+    // On by default as in the Frizti builds (EDEN_NX2_PIN_THREADS); skipped below 6 physical cores.
+    SwitchableSetting<bool> pin_gpu_threads{linkage, true, "pin_gpu_threads",
+                                            Category::RendererHacks};
+
     SwitchableSetting<ExtendedDynamicState> dyna_state{linkage,
 #if defined(__ANDROID__)
                                            ExtendedDynamicState::Disabled,

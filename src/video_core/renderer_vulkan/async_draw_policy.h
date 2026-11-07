@@ -28,6 +28,8 @@ constexpr bool CanDiscardPendingDraw(bool native, bool depth_enabled, u32 index_
     return depth_enabled || (index_count > 6 && vertex_count > 6);
 }
 
+/// Whether a native pipeline's SPIR-V emission is deferred to a worker: only while `enabled`
+/// (the async_pipelines Nx2Perf switch) and fewer than `capacity` emissions are pending.
 constexpr bool DefersShaderEmission(bool enabled, bool native, size_t pending, size_t capacity) {
     return enabled && native && pending < capacity;
 }

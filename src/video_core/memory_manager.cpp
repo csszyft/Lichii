@@ -708,6 +708,31 @@ bool MemoryManager::IsMemoryDirty(GPUVAddr gpu_addr, size_t size,
 }
 
 size_t MemoryManager::MaxContinuousRange(GPUVAddr gpu_addr, size_t size) const {
+    if (VideoCommon::Nx2Perf::On(VideoCommon::Nx2Perf::Opt::Bounds)) {
+        // Native storage buffers ask this for up to 8 MiB on each bind, ~90,000 times a second in
+        // Ocarina's Kokiri village: answer from the runs kept at map time instead of walking pages.
+        size_t result = 0;
+        if (IsWithinGPUAddressRange(gpu_addr) && size <= address_space_size - gpu_addr) {
+            const auto& runs = CurrentSnapshot().runs;
+            const auto it = std::upper_bound(
+                runs.begin(), runs.end(), gpu_addr,
+                [](GPUVAddr address, const MappingSnapshot::Run& run) { return address < run.begin; });
+            if (it != runs.begin() && gpu_addr < std::prev(it)->end) {
+                result = (std::min<size_t>)(size, std::prev(it)->end - gpu_addr);
+            }
+        }
+        if (VideoCommon::Nx2Perf::Verify()) {
+            const size_t expected = MaxContinuousRangeUncached(gpu_addr, size);
+            static std::atomic<u32> logged{};
+            if (expected != result && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+                LOG_ERROR(HW_GPU,
+                          "Nx2Perf mapping runs: MaxContinuousRange({:#x}, {:#x}) = {:#x}, walk {:#x}",
+                          gpu_addr, size, result, expected);
+            }
+            return expected;
+        }
+        return result;
+    }
     // Native storage buffers ask this for up to 8 MiB on each bind, and table pointers for up to
     // 64 MiB, tens of thousands of times a second (13-17% of the GPU back thread walking pages):
     // keep answers per thread until the page table changes. Keyed by address only: an answer

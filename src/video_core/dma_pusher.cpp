@@ -146,6 +146,17 @@ private:
 };
 } // Anonymous namespace
 
+bool DmaPusher::IsMemoryWriter(const Engines::EngineInterface& engine, Engines::EngineTypes type,
+                              u32 method) {
+    if (type == Engines::EngineTypes::KeplerCompute) {
+        return static_cast<const Engines::KeplerCompute&>(engine).MayWriteMemory(method);
+    }
+    if (type == Engines::EngineTypes::MaxwellDMA) {
+        return method >= MacroRegistersStart || engine.execution_mask[method];
+    }
+    return false;
+}
+
 DmaPusher::DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_)
     : system{system_}
     , memory_manager{memory_manager_}
@@ -519,7 +530,6 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
                         ++batch_count;
                     }
                     if (batch_count > 1) {
-                        subchannel->method_sink.reserve(subchannel->method_sink.size() + batch_count);
                         for (u32 i = 0; i < batch_count; ++i) {
                             subchannel->method_sink.emplace_back(dma_state.method + i, commands[index + i].argument);
                         }
@@ -664,7 +674,7 @@ void DmaPusher::CallMethod(u32 argument) {
         }
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = split.Active() &&
-                            WritesMemory(subchannel, engine_type, dma_state.method, 1);
+                            IsMemoryWriter(*subchannel, engine_type, dma_state.method);
         // Copies and blits are GPU work for the front's reads (GpuSplit::Effect).
         const auto effect = engine_type == Engines::EngineTypes::MaxwellDMA ||
                                     engine_type == Engines::EngineTypes::Fermi2D

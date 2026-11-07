@@ -1,9 +1,10 @@
 # Native graphics pipeline worker emission
 
-This experimental track moves native graphics SPIR-V emission and shader-module creation from
-GPUBack to `VkPipelineBuilder`. It does **not** move guest-dependent IR translation. The
-`async_pipelines` Nx2Perf switch defaults on. `EDEN_NX2_PERF_OFF=async_pipelines` or
-`EDEN_NX2_PERF_OPT=0` restores the original build path.
+Native graphics SPIR-V emission and shader-module creation run on `VkPipelineBuilder` when an
+emission reservation is available; guest-dependent IR translation remains on GPUBack. Legacy
+programs and a full reservation budget retain synchronous emission. The `async_pipelines` Nx2Perf
+switch gates the deferred path (it is opt-in in this tree, `EDEN_NX2_PERF_ON=async_pipelines`);
+`EDEN_NX2_PERF_OFF=async_pipelines` or `EDEN_NX2_PERF_OPT=0` keeps the original build path.
 
 ## Why the old path still stalls GPUBack
 
@@ -18,10 +19,12 @@ It defaults off. With it on, legacy draws may be discarded when depth is enabled
 counts exceed six. That heuristic tries to preserve small, one-time texture-generation draws.
 It does not prove that a draw's output is temporary.
 
-`CanDiscardPendingDraw` therefore rejects discarding **every native draw**, regardless of size or
-depth. Native draws may create persistent lighting, storage data, compute inputs, copied render
-targets, or readback sources. There is no reliable native classification for safe-to-skip draws.
-This track retains that policy whether asynchronous shaders are enabled or disabled.
+`CanDiscardPendingDraw` rejects discarding **every native draw** with
+`EDEN_NX2_ASYNC_DISCARD=0`, regardless of size or depth. Native draws may create persistent
+lighting, storage data, compute inputs, copied render targets, or readback sources. There is no
+reliable native classification for safe-to-skip draws. By default (#224) native draws follow the
+heuristic too: one is skipped while its pipeline builds when depth is enabled or both draw counts
+exceed six, so a lighting or post pass with no depth and few vertices still waits.
 
 ## What runs where
 
@@ -53,6 +56,18 @@ destruction waits for running work or finishes queued work before its Vulkan res
 The pipeline cache drains its workers and explicitly destroys graphics pipelines while the IR
 pool cache and other build dependencies are still alive. Destruction may claim a queued native
 build; ordinary native draw waits never do.
+
+## Cached pipeline prebuild
+
+Cached graphics pipelines that a boot does not build (the ones no recent session used) are
+prepared on background threads once the game runs, so a draw that needs one finds it built instead
+of translating it on the GPU thread. The prebuild is bounded: at most 64 entries, at most 16 MiB
+of captured shader environments, one entry per key, one emission reservation per entry, and a
+quarter of the pipeline workers (1 to 2 threads). It runs newest first, because the cache file
+appends and its end holds what the latest sessions found. A key a draw asks for first is claimed
+by the GPU thread, which builds the pipeline itself and drops the background build; a pipeline
+whose build failed is not kept. This does not depend on the `async_pipelines` switch;
+`EDEN_NX2_BACKGROUND_PIPELINES=0` disables it.
 
 ## Upstream alternative
 
@@ -94,5 +109,6 @@ and emission. No Ocarina runtime measurements or Windows build are claimed for t
 
 The reported 0.2–2.3 seconds per 10 seconds does not establish an FPS improvement. This change
 can overlap only the emission fraction with useful GPUBack work, and queue delays, allocation,
-and remaining draw holds can reduce that benefit. Its actual savings require
-equivalent cold-cache sessions with the switch on and off, not a warmed-cache second run.
+and remaining draw holds can reduce that benefit. Its actual savings require equivalent cold-cache
+sessions with the switch on and off against the original synchronous implementation, not a
+warmed-cache second run.
