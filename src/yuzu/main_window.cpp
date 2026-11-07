@@ -963,6 +963,8 @@ void MainWindow::WebBrowserRequestExit() {
 #endif
 }
 
+/// Creates the render window, the loading screen and the status bar labels and buttons (shader
+/// warm-up label included).
 void MainWindow::InitializeWidgets() {
     render_window = new GRenderWindow(this, input_subsystem);
     render_window->hide();
@@ -1519,6 +1521,7 @@ void MainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
     }
 }
 
+/// Connects the game list, render window and loading screen signals to their handlers.
 void MainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::ReportCompatibilityRequested, this, [this](u64 program_id) {
         if (!report_session || report_session->program_id != program_id || emulation_running ||
@@ -2047,6 +2050,8 @@ bool MainWindow::SelectAndSetCurrentUser(
     return true;
 }
 
+/// Loads the game and starts emulation, showing the reason when it cannot start (a running shader
+/// warm-up build included).
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type) {
     if (nup_running && filename.toStdString() == nup_source_path) {
@@ -2488,6 +2493,7 @@ void MainWindow::TerminateEmulationThread() {
     }
 }
 
+/// Resets the window and status bar to the no game state after emulation stops.
 void MainWindow::OnEmulationStopped() {
     if (!emulation_running) {
         return;
@@ -4459,6 +4465,8 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
     }));
 }
 
+/// Opens the shader warm-up dialog for the game and starts the build, or brings a running one to
+/// the front. Refused while a game runs or while this game is being converted.
 void MainWindow::OnGameListPrepareShaderWarm(u64 program_id, const std::string& game_path) {
     if (shader_warm_dialog) {
         if (shader_warm_dialog->IsRunning()) {
@@ -4498,6 +4506,7 @@ void MainWindow::OnGameListPrepareShaderWarm(u64 program_id, const std::string& 
     shader_warm_dialog->Start();
 }
 
+/// Deletes the game's warm-up files after a confirmation, showing the error when it fails.
 void MainWindow::OnGameListDeleteShaderWarm(u64 program_id) {
     if (QMessageBox::question(this, tr("Delete Shader Warm-up"),
                               tr("Delete the shader warm-up files of this game? You can prepare "
@@ -4997,6 +5006,8 @@ void MainWindow::OnTasStateChanged() {
     ui->action_TAS_Reset->setEnabled(emulation_running);
 }
 
+/// Refreshes the status bar while a game runs (TAS state, shader warm-up and build progress,
+/// speed, FPS and frame time). Stops its timer once the game is off.
 void MainWindow::UpdateStatusBar() {
     if (QtCommon::emu_thread == nullptr || !QtCommon::system->IsPoweredOn()) {
         status_bar_update_timer.stop();
