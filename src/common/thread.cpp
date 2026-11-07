@@ -19,6 +19,7 @@
 #include "common/event_wait.h"
 #include "common/logging.h"
 #include "common/nx2_sample_profile.h"
+#include "common/settings.h"
 #include "common/assert.h"
 #include "common/thread.h"
 #ifdef __APPLE__
