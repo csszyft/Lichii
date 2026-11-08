@@ -31,6 +31,7 @@
 #include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/thread.h"
+#include "common/memory_detect.h"
 #include "common/thread_worker.h"
 #include "core/core.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -46,6 +47,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/nx2_perf.h"
 #include "video_core/pipeline_cache_files.h"
+#include "video_core/pipeline_cache_policy.h"
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
@@ -397,7 +399,12 @@ vk::ShaderModule EmitShaderModule(const Device& device, const Shader::Profile& p
     // Every graphics module (monolithic pipelines, pipeline libraries, the graphics warm-up, on
     // the GPU thread or on a worker) is made here, so the pass runs once on every path.
     std::vector<u32> module_code(code.begin(), code.end());
-    if (GraphicsNoInline()) {
+    // Task and mesh shaders keep their functions inlined: with DontInline, NVIDIA's driver let a
+    // second helper call clobber the first call's live result in a mesh shader (see
+    // EmitContext::DefineGlobalMemoryFunctions, zortos293/Lichii#408).
+    const bool mesh_stage =
+        program.stage == Shader::Stage::Task || program.stage == Shader::Stage::Mesh;
+    if (!mesh_stage && GraphicsNoInline()) {
         if (const size_t marked = VideoCommon::MarkSharedFunctionsDontInline(module_code);
             marked != 0) {
             static std::atomic<u32> logged{};
@@ -1174,7 +1181,25 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         current_pipeline = nullptr;
         return nullptr;
     }
+    if (dynamic_features.has_dynamic_vertex_input) {
+        graphics_key.state.attribute_types = vertex_attribute_types;
+    }
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
+    if (dynamic_features.has_dynamic_vertex_input) {
+        // Refresh only rewrites the types when the vertex input changes, so the masked copy in the
+        // key must not carry over to the next program. Types of attributes the program doesn't
+        // read would split its pipelines by whatever the game left in those registers (Ocarina
+        // of Time: up to 20 keys for the same shaders, each built again in a later session).
+        vertex_attribute_types = graphics_key.state.attribute_types;
+        std::array<u64, Maxwell::MaxShaderProgram> attribute_masks{};
+        for (size_t stage = 0; stage < Maxwell::MaxShaderProgram; ++stage) {
+            if (graphics_key.unique_hashes[stage] != 0) {
+                attribute_masks[stage] = shader_infos[stage]->vertex_attribute_mask;
+            }
+        }
+        graphics_key.state.attribute_types = VideoCommon::KeyedAttributeTypes(
+            vertex_attribute_types, graphics_key.unique_hashes, attribute_masks);
+    }
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
@@ -1345,27 +1370,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan-frizti", CACHE_VERSION);
     used_pipelines_filename =
         VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used-frizti", CACHE_VERSION);
-    constexpr std::array<char, 8> shader_magic{'y', 'u', 'z', 'u', 'c', 'a', 'c', 'h'};
-    // This fork's cache of the previous version first, the one a player of this build has warmed:
-    // it holds the records this build reads, so the copy only relabels its header. The source is
-    // never changed; an interrupted copy is retried on the next boot ("<name>.migrating").
-    const auto previous_pipeline_cache =
-        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan-frizti", 52);
-    if (VideoCommon::CopyCompatiblePipelineCache(previous_pipeline_cache, pipeline_cache_filename,
-                                                 shader_magic, 52, CACHE_VERSION)) {
-        LOG_INFO(Render_Vulkan, "Migrated pipeline cache {} to {}",
-                 Common::FS::PathToUTF8String(previous_pipeline_cache),
-                 Common::FS::PathToUTF8String(pipeline_cache_filename));
-    }
-    {
-        std::error_code error;
-        std::filesystem::copy_file(
-            VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used-frizti", 52),
-            used_pipelines_filename, std::filesystem::copy_options::none, error);
-    }
-    // The shared files of other builds of this tree, copied once. Cache version 53 is the one
-    // zortos293/Lichii#194 on writes, so their pipeline caches are the shared files; the shared
-    // version 52 files after them hold the same records too.
+    // No shader cache of an older version is copied forward: from cache version 55
+    // (zortos293/Lichii#408) graphics keys mask the vertex attribute types a program doesn't
+    // read, so older keys are never looked up again. Only the driver pipeline cache is (below).
+    // The shared files of other builds of this tree with this cache version, copied once.
     for (const auto& [shared, own] :
          {std::pair{VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", CACHE_VERSION),
                     pipeline_cache_filename},
@@ -1379,13 +1387,6 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                      error ? fmt::format(" (failed: {})", error.message()) : std::string{});
         }
     }
-    VideoCommon::CopyCompatiblePipelineCache(
-        VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan", 52), pipeline_cache_filename,
-        shader_magic, 52, CACHE_VERSION);
-    std::error_code migration_error;
-    std::filesystem::copy_file(VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_used", 52),
-                               used_pipelines_filename, std::filesystem::copy_options::none,
-                               migration_error);
     used_pipelines = LoadUsedPipelines(used_pipelines_filename, MaxUsedPipelineAge(device));
     used_pipelines_saved = std::chrono::steady_clock::now();
     size_t skipped_pipelines = 0;
@@ -1398,9 +1399,10 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (use_vulkan_pipeline_cache) {
         vulkan_pipeline_cache_filename =
             VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_pipelines", CACHE_VERSION);
-        VideoCommon::CopyCompatiblePipelineCache(
-            VideoCommon::VersionedPipelineCachePath(base_dir, "vulkan_pipelines", 52),
-            vulkan_pipeline_cache_filename, VULKAN_CACHE_MAGIC_NUMBER, 52, CACHE_VERSION);
+        VideoCommon::CopyNewestCompatiblePipelineCache(
+            base_dir, "vulkan_pipelines", vulkan_pipeline_cache_filename,
+            VULKAN_CACHE_MAGIC_NUMBER, VideoCommon::VulkanDriverCacheMigrationSources,
+            CACHE_VERSION);
         vulkan_pipeline_cache =
             LoadVulkanPipelineCache(vulkan_pipeline_cache_filename, CACHE_VERSION);
     }
@@ -2311,10 +2313,14 @@ void PipelineCache::EvictUnusedPipelines() {
         return;
     }
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
-    // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
-    // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
+    // with every place a session went (title 1: 1,500 on its title screen alone). Past a budget of
+    // 1/16 of host RAM, the least recently used ones unused for this long are destroyed. Below it
+    // none are: an area coming back needs hundreds at once (Ocarina of Time: 2-3 s of draws held
+    // per 10 s), and each takes 2-3 ms to build again even from the driver's pipeline cache.
     constexpr u64 EvictAfterFrames = 9000;
-    if (frame_count <= EvictAfterFrames) {
+    static const size_t budget =
+        VideoCommon::GraphicsPipelineBudget(Common::GetMemInfo().TotalPhysicalMemory);
+    if (frame_count <= EvictAfterFrames || graphics_cache.size() <= budget) {
         return;
     }
     // Only while the cache is large: each one evicted is translated again on the GPU thread when
@@ -2330,37 +2336,41 @@ void PipelineCache::EvictUnusedPipelines() {
         return;
     }
     const u64 cutoff = frame_count - EvictAfterFrames;
-    const u64 tick = scheduler.CurrentTick();
     // ~0.9 GB of driver memory at ~0.45 MB each.
     constexpr size_t MaxUnusedPrebuiltPipelines = 2000;
     size_t kept_prebuilt = 0;
-    size_t evicted = 0;
-    for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
-        GraphicsPipeline* const pipeline = it->second.get();
-        if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
+    std::vector<std::pair<u64, GraphicsPipelineCacheKey>> candidates;
+    for (const auto& [key, pipeline] : graphics_cache) {
+        if (pipeline == nullptr || pipeline.get() == current_pipeline || !pipeline->IsBuilt() ||
             pipeline->LastUse() >= cutoff) {
-            ++it;
             continue;
         }
         // A pipeline built from the disk cache at boot that no draw has used yet stays, up to a
-        // budget: evicting it throws the prebuild away, and the game translates it again on the
-        // GPU thread when it reaches that content (OoT: 1174 of 1346 evicted on the title screen,
-        // 684 rebuilt in 10 s on entering the field). Past the budget they go like the rest, so a
-        // large cache can't hold their driver memory for the whole session.
+        // cap: evicting it throws the prebuild away, and the game translates it again on the GPU
+        // thread when it reaches that content (OoT: 1174 of 1346 evicted on the title screen, 684
+        // rebuilt in 10 s on entering the field). Past the cap they go like the rest, so a large
+        // cache can't hold their driver memory for the whole session.
         if (!pipeline->WasUsed() && kept_prebuilt < MaxUnusedPrebuiltPipelines) {
             ++kept_prebuilt;
-            ++it;
             continue;
         }
-        if (used_this_session.erase(pipeline) != 0) {
+        candidates.emplace_back(pipeline->LastUse(), key);
+    }
+    const size_t evicted =
+        VideoCommon::GraphicsPipelinesToEvict(graphics_cache.size(), candidates.size(), budget);
+    if (evicted == 0) {
+        return;
+    }
+    std::nth_element(candidates.begin(), candidates.begin() + (evicted - 1), candidates.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    const u64 tick = scheduler.CurrentTick();
+    for (size_t i = 0; i < evicted; ++i) {
+        const auto it = graphics_cache.find(candidates[i].second);
+        if (used_this_session.erase(it->second.get()) != 0) {
             used_and_evicted.insert(it->first.Hash());
         }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
-        it = graphics_cache.erase(it);
-        ++evicted;
-    }
-    if (evicted == 0) {
-        return;
+        graphics_cache.erase(it);
     }
     for (auto& [key, pipeline] : graphics_cache) {
         if (pipeline) {

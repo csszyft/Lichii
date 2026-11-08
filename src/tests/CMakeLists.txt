@@ -12,9 +12,11 @@ add_executable(tests
     video_core/aftermath_dump.cpp
     video_core/frame_dump_schedule.cpp
     video_core/spirv_inline_control.cpp
+    video_core/host_mip_limits.cpp
     video_core/gpu_timestamp.cpp
     core/nx2_streamplay.cpp
     core/nx2_video_ready.cpp
+    core/general_channel.cpp
     core/nx2_debug_server.cpp
     core/nx2_present_pacer.cpp
     common/dkb_cpu_trace.cpp
@@ -42,6 +44,7 @@ add_executable(tests
     video_core/vk_byte_addressed_shadow.cpp
     video_core/global_memory_coherence.cpp
     video_core/storage_buffer_pointer_tracking.cpp
+    video_core/storage_write_extent.cpp
     video_core/storage_buffer_control_flow.cpp
     core/nup_validation.cpp
     input_common/calibration_lifetime.cpp
@@ -68,6 +71,9 @@ add_executable(tests
     video_core/async_draw_policy.cpp
     video_core/async_shader_emission.cpp
     video_core/pipeline_build.cpp
+    video_core/oot_network.cpp
+    video_core/page_filter.cpp
+    video_core/pipeline_cache_policy.cpp
     video_core/pipeline_optimization.cpp
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_storage_alignment.cpp

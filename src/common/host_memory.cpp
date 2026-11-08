@@ -10,6 +10,8 @@
 #include "common/container/unordered_map.h"
 #include <boost/icl/separate_interval_set.hpp>
 #include <windows.h>
+#include <psapi.h>
+#include <vector>
 #include "common/dynamic_library.h"
 
 #else // ^^^ Windows ^^^ vvv POSIX vvv
@@ -81,6 +83,7 @@ namespace Common {
 thread_local HostMemory::AllocationTestControl* HostMemory::allocation_test_control{};
 
 [[maybe_unused]] constexpr size_t PageAlignment = 0x1000;
+[[maybe_unused]] constexpr int BackingAttempts = 5; // fastmem backing allocation tries (Windows)
 [[maybe_unused]] constexpr size_t HugePageSize = 0x200000;
 
 #ifdef _WIN32
@@ -158,8 +161,32 @@ public:
             return false;
         }
 
-        // Allocate backing file map
-        backing_handle = pfn_CreateFileMapping2(INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ, PAGE_READWRITE, SEC_COMMIT, backing_size, nullptr, nullptr, 0);
+        // Allocate backing file map. SEC_COMMIT charges all of it to the commit limit up front, and
+        // when the free commit is only just above its size the call fails with
+        // ERROR_NO_SYSTEM_RESOURCES without growing a system-managed page file. The emulator then
+        // runs the whole session without fastmem (Ocarina of Time: 20-25% fewer fps). A private
+        // commit of the same size does grow the page file, so make one, release it and try again.
+        for (int attempt = 1; attempt <= BackingAttempts && !backing_handle; ++attempt) {
+            backing_handle = pfn_CreateFileMapping2(INVALID_HANDLE_VALUE, nullptr, FILE_MAP_WRITE | FILE_MAP_READ, PAGE_READWRITE, SEC_COMMIT, backing_size, nullptr, nullptr, 0);
+            if (backing_handle) {
+                if (attempt > 1) {
+                    LOG_INFO(HW_Memory, "Allocated {} MiB of backing memory on attempt {}", backing_size >> 20, attempt);
+                }
+                break;
+            }
+            const DWORD error = GetLastError();
+            MEMORYSTATUSEX status{};
+            status.dwLength = sizeof(status);
+            GlobalMemoryStatusEx(&status);
+            LOG_WARNING(HW_Memory, "Failed to allocate {} MiB of backing memory (attempt {}, error {}, {} MiB of commit free)",
+                        backing_size >> 20, attempt, error, status.ullAvailPageFile >> 20);
+            if (void* const probe = VirtualAlloc(nullptr, backing_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)) {
+                VirtualFree(probe, 0, MEM_RELEASE);
+            }
+            if (attempt < BackingAttempts) {
+                Sleep(50);
+            }
+        }
         if (!backing_handle) {
             LOG_CRITICAL(HW_Memory, "Failed to allocate {} MiB of backing memory", backing_size >> 20);
             return false;
@@ -1075,6 +1102,94 @@ void HostMemory::HintCold(size_t physical_offset, size_t length,
     }
 }
 
+namespace {
+std::atomic<u64> g_zero_filled_bytes{};
+
+#ifdef _WIN32
+// A view page can be mapped without read access; such a page is simply skipped.
+bool IsZeroPage(const u8* page) {
+    __try {
+        const auto* words = reinterpret_cast<const volatile u64*>(page);
+        for (size_t i = 0; i < 4096 / sizeof(u64); ++i) {
+            if (words[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+#endif
+} // namespace
+
+u64 HostMemory::ZeroFilledBytes() noexcept {
+    return g_zero_filled_bytes.load(std::memory_order_relaxed);
+}
+
+std::pair<size_t, size_t> HostMemory::TrimZeroPages() const {
+#ifdef _WIN32
+    if (backing_base == nullptr) {
+        return {0, 0};
+    }
+    // Every resident page of the process, then only those of the backing and its views. The game
+    // may write a page between the check and the trim: trimming keeps the contents either way.
+    std::vector<ULONG_PTR> entries(size_t{1} << 22);
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        if (K32QueryWorkingSet(GetCurrentProcess(), entries.data(),
+                               static_cast<DWORD>(entries.size() * sizeof(ULONG_PTR)))) {
+            break;
+        }
+        if (GetLastError() != ERROR_BAD_LENGTH) {
+            return {0, 0};
+        }
+        entries.assign((std::max)(entries.size() * 2, size_t{entries[0]} + (size_t{1} << 18)), 0);
+        if (attempt == 3) {
+            return {0, 0};
+        }
+    }
+    const size_t count = (std::min)(size_t{entries[0]}, entries.size() - 1);
+    const auto in_range = [](uintptr_t page, const u8* base, size_t size) {
+        const auto begin = reinterpret_cast<uintptr_t>(base);
+        return base != nullptr && page >= begin && page < begin + size;
+    };
+    std::vector<uintptr_t> pages;
+    pages.reserve(count);
+    for (size_t i = 1; i <= count; ++i) {
+        const uintptr_t page = entries[i] & ~uintptr_t{0xFFF};
+        if (in_range(page, backing_base, backing_size) ||
+            in_range(page, virtual_base, virtual_size)) {
+            pages.push_back(page);
+        }
+    }
+    std::sort(pages.begin(), pages.end());
+    size_t trimmed = 0;
+    uintptr_t run_begin = 0;
+    uintptr_t run_end = 0;
+    const auto flush = [&] {
+        if (run_end != run_begin) {
+            VirtualUnlock(reinterpret_cast<void*>(run_begin), run_end - run_begin);
+            trimmed += run_end - run_begin;
+        }
+        run_begin = run_end = 0;
+    };
+    for (const uintptr_t page : pages) {
+        if (!IsZeroPage(reinterpret_cast<const u8*>(page))) {
+            continue;
+        }
+        if (page != run_end) {
+            flush();
+            run_begin = page;
+        }
+        run_end = page + 4096;
+    }
+    flush();
+    return {pages.size() * 4096, trimmed};
+#else
+    return {0, 0};
+#endif
+}
+
 void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 fill_value) {
     if (length == 0) {
         return;
@@ -1109,6 +1224,7 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
 #endif
             if (!cleared) {
                 std::memset(backing_base + offset, 0, clear_end - offset);
+                g_zero_filled_bytes.fetch_add(clear_end - offset, std::memory_order_relaxed);
             }
             if (whole) {
                 granules[index].fetch_and(static_cast<u8>(~GranuleDirty), std::memory_order_release);

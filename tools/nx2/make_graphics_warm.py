@@ -6,7 +6,7 @@ the dump manifest (extract_static_shaders.py output) this lowers the native code
 shader-sweep (--capture-extent), rebuilds the code layout the emulator stores in its pipeline
 cache, and writes one single-stage entry per program. Mesh and task programs are skipped.
 
-File: 'yuzucach' + u32 version (must match the emulator's VulkanPipelineCacheVersion, 54 today),
+File: 'yuzucach' + u32 version (must match the emulator's VulkanPipelineCacheVersion, 55 today),
 then per entry (v52/v53 graphics layout):
     u32 env count = 1
     env record (GenericEnvironment::Serialize layout):
@@ -197,7 +197,7 @@ def main():
     ap.add_argument('--runtime-cache', nargs='+', required=True,
                     help='v54 pipeline caches recorded by the game (pipeline state statistics)')
     ap.add_argument('--out', default='./warm-graphics.bin')
-    ap.add_argument('--version', type=int, default=54)
+    ap.add_argument('--version', type=int, default=55)
     ap.add_argument('--jobs', type=int, default=6)
     ap.add_argument('--validate', action='store_true',
                     help='compare generated entries with runtime records (translates both)')
